@@ -61,19 +61,33 @@ set(lib_headers
     include/small/lsregion.h
     include/small/static.h)
 
+# ASAN implementation has extra headers that are included from regular headers.
+if(ENABLE_ASAN)
+    list(APPEND lib_headers
+         include/small/small_asan.h)
+endif()
+
 set(lib_sources
+    small/util.c
     small/small_features.c
     small/slab_cache.c
     small/region.c
     small/mempool.c
     small/slab_arena.c
-    small/small_class.c
-    small/small.c
     small/matras.c
     small/ibuf.c
     small/obuf.c
     small/lsregion.c
     small/static.c)
+
+if(ENABLE_ASAN)
+    list(APPEND lib_sources
+         small/small_asan.c)
+else()
+    list(APPEND lib_sources
+         small/small_class.c
+         small/small.c)
+endif()
 
 add_library(${PROJECT_NAME} STATIC ${lib_sources})
 target_link_libraries(${PROJECT_NAME} m)
@@ -83,6 +97,10 @@ add_subdirectory(test)
 add_subdirectory(perf)
 
 if(DEFINED SMALL_EMBEDDED)
+    # In embedded case we should able to find small_config.h.
+    target_include_directories(${PROJECT_NAME} INTERFACE
+                               "${CMAKE_CURRENT_BINARY_DIR}/small/include")
+
     # Don't build shared library and skip INSTALL() targets if this
     # library is used as submodule in other project.
     return()

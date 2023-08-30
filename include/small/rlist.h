@@ -31,6 +31,8 @@
  * SUCH DAMAGE.
  */
 #include <stddef.h>
+#include "util.h"
+
 #if defined(__cplusplus)
 extern "C" {
 #endif /* defined(__cplusplus) */
@@ -44,6 +46,8 @@ extern "C" {
 #define offsetof(type, member) ((size_t) &((type *)0)->member)
 #endif
 
+#define SMALL_ALWAYS_INLINE __attribute__((always_inline))
+
 /**
  * list entry and head structure
  */
@@ -54,9 +58,11 @@ struct rlist {
 };
 
 /**
- * init list head (or list entry as ins't included in list)
+ * Init list head (or list entry as isn't included in list).
+ *
+ * Use SMALL_ALWAYS_INLINE to inline in rlist_del.
  */
-
+SMALL_ALWAYS_INLINE
 inline static void
 rlist_create(struct rlist *list)
 {
@@ -65,8 +71,11 @@ rlist_create(struct rlist *list)
 }
 
 /**
- * add item to list
+ * Add item to list.
+ *
+ * Use SMALL_ALWAYS_INLINE to disable ASAN instrumentation in rlist_add_no_asan.
  */
+SMALL_ALWAYS_INLINE
 inline static void
 rlist_add(struct rlist *head, struct rlist *item)
 {
@@ -77,8 +86,12 @@ rlist_add(struct rlist *head, struct rlist *item)
 }
 
 /**
- * add item to list tail
+ * Add item to list tail.
+ *
+ * Use SMALL_ALWAYS_INLINE to disable ASAN instrumentation in
+ * rlist_add_tail_no_asan.
  */
+SMALL_ALWAYS_INLINE
 inline static void
 rlist_add_tail(struct rlist *head, struct rlist *item)
 {
@@ -89,8 +102,11 @@ rlist_add_tail(struct rlist *head, struct rlist *item)
 }
 
 /**
- * delete element
+ * Delete element.
+ *
+ * Use SMALL_ALWAYS_INLINE to disable ASAN instrumentation in rlist_del_no_asan.
  */
+SMALL_ALWAYS_INLINE
 inline static void
 rlist_del(struct rlist *item)
 {
@@ -136,9 +152,13 @@ rlist_last(struct rlist *head)
 }
 
 /**
- * return next element by element
+ * Return next element by element.
+ *
+ * Use SMALL_ALWAYS_INLINE to disable ASAN instrumentation in
+ * SMALL_NO_SANITIZE_ADDRESS functions that use foreach macros.
  */
 inline static struct rlist *
+SMALL_ALWAYS_INLINE
 rlist_next(struct rlist *item)
 {
 	return item->next;
@@ -409,6 +429,52 @@ delete from one list and add_tail as another's head
 	     !rlist_entry_is_head((item), (head), member) &&		\
 	     ((tmp) = rlist_prev_entry((item), member));		\
 	     (item) = (tmp))
+
+#ifdef ENABLE_ASAN
+
+/**
+ * Same as rlist_add but has no ASAN instrumentation so can be used with
+ * poisoned arguments.
+ */
+SMALL_NO_SANITIZE_ADDRESS
+inline static void
+rlist_add_no_asan(struct rlist *head, struct rlist *item)
+{
+	rlist_add(head, item);
+}
+
+/**
+ * Same as rlist_add_tail but has no ASAN instrumentation so can be used with
+ * poisoned arguments.
+ */
+SMALL_NO_SANITIZE_ADDRESS
+inline static void
+rlist_add_tail_no_asan(struct rlist *head, struct rlist *item)
+{
+	rlist_add_tail(head, item);
+}
+
+/**
+ * Same as rlist_del but has no ASAN instrumentation so can be used with
+ * poisoned arguments.
+ */
+SMALL_NO_SANITIZE_ADDRESS
+inline static void
+rlist_del_no_asan(struct rlist *item)
+{
+	rlist_del(item);
+}
+
+#define rlist_add_entry_no_asan(head, item, member)			\
+	rlist_add_no_asan((head), &(item)->member)
+
+#define rlist_add_tail_entry_no_asan(head, item, member)		\
+	rlist_add_tail_no_asan((head), &(item)->member)
+
+#define rlist_del_entry_no_asan(item, member)				\
+	rlist_del_no_asan(&((item)->member))
+
+#endif /* ifdef ENABLE_ASAN */
 
 #if defined(__cplusplus)
 } /* extern "C" */
