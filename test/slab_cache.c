@@ -48,7 +48,7 @@ test_slab_cache(void)
 	 * If at lest one block was allocated then after freeing
 	 * all memory it must be exactly one slab.
 	 */
-	ok(cache.allocated.stats.total == arena.slab_size);
+	ok_no_asan(cache.allocated.stats.total == arena.slab_size);
 
 	slab_cache_destroy(&cache);
 	slab_arena_destroy(&arena);
@@ -56,6 +56,8 @@ test_slab_cache(void)
 	footer();
 	check_plan();
 }
+
+#ifndef ENABLE_ASAN
 
 static void
 test_slab_real_size(void)
@@ -79,17 +81,25 @@ test_slab_real_size(void)
 	check_plan();
 }
 
+#endif
+
 int
 main(void)
 {
+#ifndef ENABLE_ASAN
 	plan(2);
+#else
+	plan(1);
+#endif
 	header();
 
 	srand(time(0));
 	quota_init(&quota, UINT_MAX);
 
 	test_slab_cache();
+#ifndef ENABLE_ASAN
 	test_slab_real_size();
+#endif
 
 	footer();
 	return check_plan();
