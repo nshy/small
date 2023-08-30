@@ -7,6 +7,8 @@
 #include <time.h>
 #include "unit.h"
 
+#ifndef ENABLE_ASAN
+
 #define is_hex_digit(c)				\
 	(((c) >= '0' && (c) <= '9')	||	\
 	 ((c) >= 'a' && (c) <= 'f')	||	\
@@ -121,23 +123,31 @@ slab_test_madvise(void)
 	check_plan();
 }
 
+#endif /* ifndef ENABLE_ASAN */
+
 static void
 slab_test_basic(void)
 {
 	struct quota quota;
 	struct slab_arena arena;
 
+#ifdef ENABLE_ASAN
+	plan(8);
+#else
 	plan(18);
+#endif
 	header();
 
 	quota_init(&quota, 0);
 	slab_arena_create(&arena, &quota, 0, 0, MAP_PRIVATE);
-	ok(arena.prealloc == 0);
+	ok_no_asan(arena.prealloc == 0);
 	ok(quota_total(&quota) == 0);
-	ok(arena.used == 0);
+	ok_no_asan(arena.used == 0);
 	ok(arena.slab_size == SLAB_MIN_SIZE);
 	slab_arena_destroy(&arena);
 
+#ifndef ENABLE_ASAN
+	/* malloc implementation does not support quota. */
 	quota_init(&quota, SLAB_MIN_SIZE);
 	slab_arena_create(&arena, &quota, 1, 1, MAP_PRIVATE);
 	ok(arena.prealloc == SLAB_MIN_SIZE);
@@ -155,12 +165,13 @@ slab_test_basic(void)
 	slab_unmap(&arena, ptr1);
 	ok(arena.used == SLAB_MIN_SIZE);
 	slab_arena_destroy(&arena);
+#endif
 
 	quota_init(&quota, 2000000);
 	slab_arena_create(&arena, &quota, 3000000, 1, MAP_PRIVATE);
-	ok(arena.prealloc == 2031616);
+	ok_no_asan(arena.prealloc == 2031616);
 	ok(quota_total(&quota) == 2000896);
-	ok(arena.used == 0);
+	ok_no_asan(arena.used == 0);
 	ok(arena.slab_size == SLAB_MIN_SIZE);
 	slab_arena_destroy(&arena);
 
@@ -171,11 +182,17 @@ slab_test_basic(void)
 int
 main(void)
 {
+#ifdef ENABLE_ASAN
+	plan(1);
+#else
 	plan(2);
+#endif
 	header();
 
 	slab_test_basic();
+#ifndef ENABLE_ASAN
 	slab_test_madvise();
+#endif
 
 	footer();
 	return check_plan();

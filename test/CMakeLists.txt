@@ -58,8 +58,6 @@ if(NOT ENABLE_ASAN)
          ${PROJECT_SOURCE_DIR}/small/small_class.c)
 else()
     list(APPEND small_sources
-         # cache and arena are required to compile the test.
-         ${PROJECT_SOURCE_DIR}/small/slab_arena.c
          ${PROJECT_SOURCE_DIR}/small/small_asan.c)
 endif()
 
