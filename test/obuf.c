@@ -9,8 +9,12 @@
 enum {
 	OBJSIZE_MIN = sizeof(int),
 	OBJSIZE_MAX = 5000,
+#ifdef ENABLE_ASAN
+	OSCILLATION_MAX = SMALL_OBUF_IOV_CHECKED_SIZE * 3,
+#else
 	OSCILLATION_MAX = 1024,
-	ITERATIONS_MAX = 5000,
+#endif
+	ITERATIONS_MAX = 1000,
 };
 
 void
@@ -18,7 +22,17 @@ alloc_checked(struct obuf *buf)
 {
 	int size = OBJSIZE_MIN + rand() % (OBJSIZE_MAX - OBJSIZE_MIN + 1);
 	fail_unless(size >= OBJSIZE_MIN && size <= OBJSIZE_MAX);
-	obuf_alloc(buf, size);
+	void *ptr = obuf_alloc(buf, size);
+	fail_unless(ptr != NULL);
+	fail_unless(buf->pos < SMALL_OBUF_IOV_MAX);
+#ifdef ENABLE_ASAN
+	fail_unless(buf->iov[buf->pos + 1].iov_base == NULL);
+	fail_unless(buf->iov[buf->pos + 1].iov_len == 0);
+	if (buf->pos < SMALL_OBUF_IOV_CHECKED_SIZE) {
+		fail_unless((uintptr_t)ptr % SMALL_OBUF_ALIGNMENT == 0);
+		fail_unless((uintptr_t)ptr % (2 * SMALL_OBUF_ALIGNMENT) != 0);
+	}
+#endif
 }
 
 static void
@@ -53,13 +67,130 @@ obuf_basic(struct slab_cache *slabc)
 	check_plan();
 }
 
+static void
+obuf_rollback_run(struct slab_cache *slabc)
+{
+	struct obuf buf;
+	obuf_create(&buf, slabc, 16384);
+	struct obuf_svp *svp = malloc(sizeof(*svp) * OSCILLATION_MAX);
+	struct iovec *iov = malloc(sizeof(*iov) * OSCILLATION_MAX);
+
+	int i;
+	for (i = 0; i < OSCILLATION_MAX; i++) {
+		iov[i] = buf.iov[buf.pos];
+		svp[i] = obuf_create_svp(&buf);
+		int size = OBJSIZE_MIN +
+			   rand() % (OBJSIZE_MAX - OBJSIZE_MIN + 1);
+		void *ptr = obuf_alloc(&buf, size);
+		fail_unless(ptr != NULL);
+	}
+	i -= 1 + rand() % 6;
+	while (i > 0) {
+		obuf_rollback_to_svp(&buf, &svp[i]);
+		fail_unless(buf.pos == (int)svp[i].pos);
+		fail_unless(buf.iov[buf.pos].iov_len == svp[i].iov_len);
+		fail_unless(buf.used == svp[i].used);
+		fail_unless(buf.iov[buf.pos].iov_base == iov[i].iov_base);
+		((char *)iov[i].iov_base)[0] = '\0';
+		((char *)iov[i].iov_base)[iov[i].iov_len - 1] = '\0';
+		for (int pos = buf.pos + 1; pos <= SMALL_OBUF_IOV_MAX; pos++) {
+			fail_unless_asan(buf.iov[pos].iov_base == NULL);
+			fail_unless_asan(buf.iov[pos].iov_len == 0);
+		}
+		i -= rand() % 7;
+	}
+	obuf_rollback_to_svp(&buf, &svp[0]);
+	fail_unless(buf.pos == 0);
+	fail_unless(buf.used == 0);
+	for (int pos = 0; pos <= SMALL_OBUF_IOV_MAX; pos++) {
+		fail_unless_asan(buf.iov[pos].iov_base == NULL);
+		fail_unless_asan(buf.iov[pos].iov_len == 0);
+	}
+
+	obuf_destroy(&buf);
+	free(svp);
+	free(iov);
+}
+
+static void
+obuf_rollback(struct slab_cache *slabc)
+{
+	plan(1);
+	header();
+
+	for (int i = 0; i < 37; i++)
+		obuf_rollback_run(slabc);
+	ok(true);
+
+	footer();
+	check_plan();
+}
+
+#ifdef ENABLE_ASAN
+
+static void
+obuf_poison(struct slab_cache *slabc)
+{
+	plan(1);
+	header();
+
+	struct obuf buf;
+	obuf_create(&buf, slabc, 16384);
+	size_t size_max = 2 * small_getpagesize();
+	for (int i = 0; i < 87; i++) {
+		size_t size_r = rand() % size_max;
+		size_t size_a = rand() % size_r;
+		char *ptr_r = (char *)obuf_reserve(&buf, size_r);
+		fail_unless(ptr_r != NULL);
+		memset(ptr_r, 0, size_a);
+		char *ptr_a = (char *)obuf_alloc(&buf, size_a);
+		fail_unless(ptr_r == ptr_a);
+		for (char *p = ptr_r + size_a; p < ptr_r + size_r; p++)
+			fail_unless(__asan_address_is_poisoned(p));
+	}
+	obuf_destroy(&buf);
+	ok(true);
+
+	footer();
+	check_plan();
+}
+
+static void
+obuf_tiny_reserve_size(struct slab_cache *slabc)
+{
+	plan(1);
+	header();
+
+	struct obuf buf;
+	obuf_create(&buf, slabc, 16384);
+	size_t size_max = small_getpagesize();
+	for (int i = 0; i < 87; i++) {
+		size_t size = rand() % (size_max + 1);
+		void *ptr = obuf_reserve(&buf, size);
+		fail_unless(ptr != NULL);
+		memset(ptr, 0, size_max);
+		obuf_alloc(&buf, size);
+	}
+	obuf_destroy(&buf);
+	ok(true);
+
+	footer();
+	check_plan();
+}
+
+#endif /* ifdef ENABLE_ASAN */
+
 int main()
 {
 	struct slab_cache cache;
 	struct slab_arena arena;
 	struct quota quota;
 
-	plan(1);
+#ifdef ENABLE_ASAN
+	plan(4);
+#else
+	plan(2);
+#endif
 	header();
 
 	srand(time(NULL));
@@ -71,6 +202,11 @@ int main()
 	slab_cache_create(&cache, &arena);
 
 	obuf_basic(&cache);
+	obuf_rollback(&cache);
+#ifdef ENABLE_ASAN
+	obuf_poison(&cache);
+	obuf_tiny_reserve_size(&cache);
+#endif
 
 	slab_cache_destroy(&cache);
 	slab_arena_destroy(&arena);
