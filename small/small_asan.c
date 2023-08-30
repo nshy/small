@@ -38,7 +38,7 @@ small_alloc_create(struct small_alloc *alloc, struct slab_cache *cache,
 	(void)objsize_min;
 	(void)granularity;
 	(void)alloc_factor;
-	(void)cache;
+	alloc->quota = &cache->quota;
 	rlist_create(&alloc->objects);
 	alloc->used = 0;
 	alloc->objcount = 0;
@@ -54,6 +54,7 @@ small_alloc_destroy(struct small_alloc *alloc)
 {
 	struct small_object *obj, *tmp;
 	rlist_foreach_entry_safe(obj, &alloc->objects, link, tmp) {
+		quota_end_lease(alloc->quota, obj->size);
 		struct small_wrapper wrapper;
 		small_wrapper_from_header(&wrapper, obj, obj->size,
 					  SMALL_ASAN_ALIGNMENT, sizeof(*obj));
@@ -65,6 +66,8 @@ small_alloc_destroy(struct small_alloc *alloc)
 void *
 smalloc(struct small_alloc *alloc, size_t size)
 {
+	if (quota_lease(alloc->quota, size) < 0)
+		return NULL;
 	struct small_wrapper wrapper;
 	small_wrapper_alloc(&wrapper, size, SMALL_ASAN_ALIGNMENT,
 			    sizeof(struct small_object));
@@ -88,6 +91,7 @@ smfree(struct small_alloc *alloc, void *ptr, size_t size)
 
 	struct small_object *obj = (struct small_object *)wrapper.header;
 	small_assert(obj->size == size && "smfree object size check");
+	quota_end_lease(alloc->quota, obj->size);
 	/* Other objects in the list are poisoned. */
 	rlist_del_entry_no_asan(obj, link);
 	alloc->used -= obj->size;
