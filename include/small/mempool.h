@@ -30,6 +30,32 @@
  * THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+#include <stdint.h>
+#include "slab_list.h"
+
+/** Allocation statistics. */
+struct mempool_stats
+{
+	/** Object size. */
+	uint32_t objsize;
+	/** Total objects allocated. */
+	uint32_t objcount;
+	/** Size of the slab. */
+	uint32_t slabsize;
+	/** Number of slabs. All slabs are of the same size. */
+	uint32_t slabcount;
+	/** Memory used and booked but passive (to see fragmentation). */
+	struct small_stats totals;
+};
+
+#include "small_config.h"
+
+#ifdef ENABLE_ASAN
+#  include "mempool_asan.h"
+#endif
+
+#ifndef ENABLE_ASAN
+
 #include <stddef.h>
 #include <stdbool.h>
 #include <inttypes.h>
@@ -181,21 +207,6 @@ struct mempool
 	struct small_mempool *small_mempool;
 };
 
-/** Allocation statistics. */
-struct mempool_stats
-{
-	/** Object size. */
-	uint32_t objsize;
-	/** Total objects allocated. */
-	uint32_t objcount;
-	/** Size of the slab. */
-	uint32_t slabsize;
-	/** Number of slabs. All slabs are of the same size. */
-	uint32_t slabcount;
-	/** Memory used and booked but passive (to see fragmentation). */
-	struct small_stats totals;
-};
-
 void
 mempool_stats(struct mempool *mempool, struct mempool_stats *stats);
 
@@ -324,5 +335,7 @@ mempool_free_spare_slab(struct mempool *pool)
 #if defined(__cplusplus)
 } /* extern "C" */
 #endif /* defined(__cplusplus) */
+
+#endif /* ifndef ENABLE_ASAN */
 
 #endif /* INCLUDES_TARANTOOL_SMALL_MEMPOOL_H */
