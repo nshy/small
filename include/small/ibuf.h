@@ -32,6 +32,7 @@
  */
 #include <stddef.h>
 #include <assert.h>
+#include <sanitizer/asan_interface.h>
 
 #if defined(__cplusplus)
 extern "C" {
@@ -116,6 +117,7 @@ static inline void
 ibuf_reset(struct ibuf *ibuf)
 {
 	ibuf->rpos = ibuf->wpos = ibuf->buf;
+	ASAN_POISON_MEMORY_REGION(ibuf->buf, ibuf->end - ibuf->buf);
 }
 
 void *
@@ -124,8 +126,10 @@ ibuf_reserve_slow(struct ibuf *ibuf, size_t size);
 static inline void *
 ibuf_reserve(struct ibuf *ibuf, size_t size)
 {
-	if (ibuf->wpos + size <= ibuf->end)
+	if (ibuf->wpos + size <= ibuf->end) {
+		ASAN_UNPOISON_MEMORY_REGION(ibuf->wpos, ibuf->end - ibuf->wpos);
 		return ibuf->wpos;
+	}
 	return ibuf_reserve_slow(ibuf, size);
 }
 
@@ -133,14 +137,16 @@ static inline void *
 ibuf_alloc(struct ibuf *ibuf, size_t size)
 {
 	void *ptr;
-	if (ibuf->wpos + size <= ibuf->end)
+	if (ibuf->wpos + size <= ibuf->end) {
+		ASAN_UNPOISON_MEMORY_REGION(ibuf->wpos, ibuf->end - ibuf->wpos);
 		ptr = ibuf->wpos;
-	else {
+	} else {
 		ptr = ibuf_reserve_slow(ibuf, size);
 		if (ptr == NULL)
 			return NULL;
 	}
 	ibuf->wpos += size;
+	ASAN_POISON_MEMORY_REGION(ibuf->wpos, ibuf->end - ibuf->wpos);
 	return ptr;
 }
 
@@ -160,7 +166,9 @@ static inline void
 ibuf_truncate(struct ibuf *ibuf, size_t used)
 {
 	assert(used <= ibuf_used(ibuf));
+	size_t size = ibuf->wpos - (ibuf->rpos + used);
 	ibuf->wpos = ibuf->rpos + used;
+	ASAN_POISON_MEMORY_REGION(ibuf->wpos, size);
 }
 
 static inline void *
