@@ -68,18 +68,16 @@ obuf_prepare_buf(struct obuf *buf, size_t size)
 		return ptr;
 	}
 
-	struct small_wrapper wrapper;
-	small_wrapper_alloc(&wrapper, size, SMALL_OBUF_ALIGNMENT,
-			    sizeof(struct obuf_allocation));
+	char *alloc = small_asan_alloc(size, SMALL_OBUF_ALIGNMENT, 0);
+	char *payload = small_asan_payload_from_header(alloc);
 
 	/* See obuf.pos semantics in struct definition. */
 	if (buf->iov[buf->pos].iov_base != NULL)
 		buf->pos++;
-	buf->iov[buf->pos].iov_base = wrapper.payload;
+	buf->iov[buf->pos].iov_base = payload;
 	buf->iov[buf->pos].iov_len = 0;
 
-	small_wrapper_poison(&wrapper);
-	return wrapper.payload;
+	return payload;
 }
 
 void *
@@ -125,6 +123,7 @@ obuf_alloc(struct obuf *buf, size_t size)
 	return ptr;
 }
 
+SMALL_NO_SANITIZE_ADDRESS
 void
 obuf_rollback_to_svp(struct obuf *buf, struct obuf_svp *svp)
 {
@@ -141,13 +140,12 @@ obuf_rollback_to_svp(struct obuf *buf, struct obuf_svp *svp)
 	      buf->iov[0].iov_base != NULL))
 		pos++;
 	int endpos = buf->pos;
-	if (endpos > SMALL_OBUF_IOV_CHECKED_SIZE)
-		endpos = SMALL_OBUF_IOV_CHECKED_SIZE;
-	for (int i = pos; i < endpos; i++) {
-		struct small_wrapper wrapper;
-		small_wrapper_from_payload(&wrapper, buf->iov[i].iov_base,
-					   sizeof(struct obuf_allocation));
-		small_wrapper_free(&wrapper);
+	if (endpos > SMALL_OBUF_IOV_CHECKED_SIZE - 1)
+		endpos = SMALL_OBUF_IOV_CHECKED_SIZE - 1;
+	for (int i = pos; i <= endpos; i++) {
+		void *alloc = small_asan_header_from_payload(
+							buf->iov[i].iov_base);
+		small_asan_free(alloc);
 
 	}
 	int startpos = pos;

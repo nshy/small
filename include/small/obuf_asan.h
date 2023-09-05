@@ -73,7 +73,7 @@ enum {
  * which is expected by some client code.
  *
  * See however a bit of limitation for out-of-bound access check in description
- * of struct small_wrapper.
+ * of small_asan_alloc.
  *
  * Allocations are completely not aligned in the beginning (that is not
  * 2 aligned). This improves unaligned memory access check.
@@ -113,14 +113,6 @@ struct obuf {
 	size_t used;
 	/** If not 0 then amount of memory reserved with the obuf_reserve. */
 	size_t reserved;
-};
-
-/**
- * Just stub to use wrapper. We don't need to store extra data with
- * allocation but we use wrapper to make allocation unaligned.
- */
-struct obuf_allocation {
-	struct small_header base;
 };
 
 void

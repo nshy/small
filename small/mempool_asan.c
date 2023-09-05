@@ -59,42 +59,33 @@ void
 mempool_destroy(struct mempool *pool)
 {
 	struct mempool_object *obj, *tmp;
-	rlist_foreach_entry_safe(obj, &pool->objects, link, tmp) {
-		struct small_wrapper wrapper;
-		small_wrapper_from_header(&wrapper, obj, pool->objsize,
-					  pool->alignment, sizeof(*obj));
-		small_wrapper_free(&wrapper);
-	}
+	rlist_foreach_entry_safe(obj, &pool->objects, link, tmp)
+		small_asan_free(obj);
 	rlist_create(&pool->objects);
 }
 
 void *
 mempool_alloc(struct mempool *pool)
 {
-	struct small_wrapper wrapper;
-	small_wrapper_alloc(&wrapper, pool->objsize, pool->alignment,
-			             sizeof(struct mempool_object));
 
-	struct mempool_object *obj = (struct mempool_object *)wrapper.header;
+	struct mempool_object *obj = (struct mempool_object *)
+			small_asan_alloc(pool->objsize, pool->alignment,
+					 sizeof(struct mempool_object));
 	/* Other objects in the list are poisoned. */
 	rlist_add_entry_no_asan(&pool->objects, obj, link);
 	pool->objcount++;
 
-	small_wrapper_poison(&wrapper);
-	return wrapper.payload;
+	return small_asan_payload_from_header(obj);
 }
 
 void
 mempool_free(struct mempool *pool, void *ptr)
 {
-	struct small_wrapper wrapper;
-	small_wrapper_from_payload(&wrapper, ptr,
-				   sizeof(struct mempool_object));
-
-	struct mempool_object *obj = (struct mempool_object *)wrapper.header;
+	struct mempool_object *obj = (struct mempool_object *)
+		small_asan_header_from_payload(ptr);
 	/* Other objects in the list are poisoned. */
 	rlist_del_entry_no_asan(obj, link);
 	pool->objcount--;
 
-	small_wrapper_free(&wrapper);
+	small_asan_free(obj);
 }

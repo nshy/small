@@ -31,24 +31,20 @@
 #include "region.h"
 
 /** Allocate new memory block whether for allocation or reservation. */
+SMALL_NO_SANITIZE_ADDRESS
 static void *
 region_prepare_buf(struct region *region, size_t size, size_t alignment,
 		   size_t used)
 {
-	struct small_wrapper wrapper;
-	small_wrapper_alloc(&wrapper, size, alignment,
-			    sizeof(struct region_allocation));
-
-	struct region_allocation *alloc =
-			(struct region_allocation *)wrapper.header;
-	alloc->size = size;
+	struct region_allocation *alloc = (struct region_allocation *)
+		small_asan_alloc(size, alignment,
+				 sizeof(struct region_allocation));
 	alloc->used = used;
 	alloc->alignment = alignment;
 	/* Other objects in the list are poisoned. */
 	rlist_add_entry_no_asan(&region->allocations, alloc, link);
 
-	small_wrapper_poison(&wrapper);
-	return wrapper.payload;
+	return small_asan_payload_from_header(alloc);
 }
 
 void *
@@ -85,17 +81,15 @@ region_aligned_alloc_reserved(struct region *region, size_t size,
 	if (small_unlikely(region->on_alloc_cb != NULL))
 		region->on_alloc_cb(region, size, region->cb_arg);
 
+	/* Poison reserved but not allocated memory. */
+	char *payload = small_asan_payload_from_header(alloc);
+	ASAN_POISON_MEMORY_REGION(payload + size, region->reserved - size);
+
 	region->used += size;
 	alloc->used += size;
 	region->reserved = 0;
 
-	/* Poison reserved but not allocated memory. */
-	struct small_wrapper wrapper;
-	small_wrapper_from_header(&wrapper, alloc, alloc->size,
-				  alloc->alignment, sizeof(*alloc));
-	ASAN_POISON_MEMORY_REGION((char *)wrapper.payload + size,
-				  alloc->size - size);
-	return wrapper.payload;
+	return small_asan_payload_from_header(alloc);
 }
 
 void *
@@ -133,11 +127,7 @@ region_truncate(struct region *region, size_t used)
 		small_assert(alloc->used <= cut_size);
 		cut_size -= alloc->used;
 		rlist_del_entry(alloc, link);
-
-		struct small_wrapper wrapper;
-		small_wrapper_from_header(&wrapper, alloc, alloc->size,
-					  alloc->alignment, sizeof(*alloc));
-		small_wrapper_free(&wrapper);
+		small_asan_free(alloc);
 	}
 	region->used = used;
 	region->reserved = 0;
@@ -157,14 +147,11 @@ region_join(struct region *region, size_t size)
 	char *ret = (char *)region_alloc(region, size);
 	size_t offset = size;
 	while (offset > 0) {
-		struct small_wrapper wrapper;
-		small_wrapper_from_header(&wrapper, alloc, alloc->size,
-					  alloc->alignment, sizeof(*alloc));
-
 		size_t copy_size = alloc->used;
 		if (offset < copy_size)
 			copy_size = offset;
-		memcpy(ret + offset - copy_size, wrapper.payload, copy_size);
+		memcpy(ret + offset - copy_size,
+		       small_asan_payload_from_header(alloc), copy_size);
 
 		offset -= copy_size;
 		alloc = rlist_next_entry(alloc, link);

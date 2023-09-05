@@ -43,7 +43,7 @@ extern "C" {
  * interface as regular implementation but allocates every allocation using
  * malloc(). This allows to do usual ASAN checks for memory allocation.
  * See however a bit of limitation for out-of-bound access check in
- * description of struct small_wrapper.
+ * description of small_asan_alloc.
  *
  * Allocation alignment is as requested or 1 if not specified. Additionally
  * each allocation is not aligned on next power of 2 alignment. This improves
@@ -58,16 +58,12 @@ struct lsregion {
 
 /** Extra data associated with each lsregion allocation. */
 struct lsregion_allocation {
-	/** Base member required for wrapper. */
-	struct small_header base;
 	/** Link for allocations list in allocator. */
 	struct rlist link;
 	/** Allocation size. */
 	size_t size;
 	/** Allocation id. */
 	int64_t id;
-	/** Allocation alignment. */
-	size_t alignment;
 };
 
 static inline void

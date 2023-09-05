@@ -30,25 +30,21 @@
  */
 #include "lsregion.h"
 
+SMALL_NO_SANITIZE_ADDRESS
 void *
 lsregion_aligned_alloc(struct lsregion *lsregion, size_t size, size_t alignment,
 		       int64_t id)
 {
-	struct small_wrapper wrapper;
-	small_wrapper_alloc(&wrapper, size, alignment,
-			    sizeof(struct lsregion_allocation));
-
-	struct lsregion_allocation *alloc =
-			(struct lsregion_allocation *)wrapper.header;
+	struct lsregion_allocation *alloc = (struct lsregion_allocation *)
+		small_asan_alloc(size, alignment,
+				 sizeof(struct lsregion_allocation));
 	alloc->size = size;
-	alloc->alignment = alignment;
 	alloc->id = id;
 	/* Other objects in the list are poisoned. */
 	rlist_add_tail_entry_no_asan(&lsregion->allocations, alloc, link);
 	lsregion->used += size;
 
-	small_wrapper_poison(&wrapper);
-	return wrapper.payload;
+	return small_asan_payload_from_header(alloc);
 }
 
 /**
@@ -66,10 +62,6 @@ lsregion_gc(struct lsregion *lsregion, int64_t min_id)
 		small_assert(lsregion->used >= alloc->size);
 		lsregion->used -= alloc->size;
 		rlist_del_entry(alloc, link);
-
-		struct small_wrapper wrapper;
-		small_wrapper_from_header(&wrapper, alloc, alloc->size,
-					  alloc->alignment, sizeof(*alloc));
-		small_wrapper_free(&wrapper);
+		small_asan_free(alloc);
 	}
 }

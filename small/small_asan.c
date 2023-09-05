@@ -55,41 +55,35 @@ small_alloc_destroy(struct small_alloc *alloc)
 	struct small_object *obj, *tmp;
 	rlist_foreach_entry_safe(obj, &alloc->objects, link, tmp) {
 		quota_end_lease(alloc->quota, obj->size);
-		struct small_wrapper wrapper;
-		small_wrapper_from_header(&wrapper, obj, obj->size,
-					  SMALL_ASAN_ALIGNMENT, sizeof(*obj));
-		small_wrapper_free(&wrapper);
+		small_asan_free(obj);
 	}
 	rlist_create(&alloc->objects);
 }
 
+SMALL_NO_SANITIZE_ADDRESS
 void *
 smalloc(struct small_alloc *alloc, size_t size)
 {
 	if (quota_lease(alloc->quota, size) < 0)
 		return NULL;
-	struct small_wrapper wrapper;
-	small_wrapper_alloc(&wrapper, size, SMALL_ASAN_ALIGNMENT,
-			    sizeof(struct small_object));
-
-	struct small_object *obj = (struct small_object *)wrapper.header;
+	struct small_object *obj = (struct small_object *)
+			small_asan_alloc(size, SMALL_ASAN_ALIGNMENT,
+					 sizeof(struct small_object));
 	obj->size = size;
 	/* Other objects in the list are poisoned. */
 	rlist_add_entry_no_asan(&alloc->objects, obj, link);
 	alloc->used += size;
 	alloc->objcount++;
 
-	small_wrapper_poison(&wrapper);
-	return wrapper.payload;
+	return small_asan_payload_from_header(obj);
 }
 
+SMALL_NO_SANITIZE_ADDRESS
 void
 smfree(struct small_alloc *alloc, void *ptr, size_t size)
 {
-	struct small_wrapper wrapper;
-	small_wrapper_from_payload(&wrapper, ptr, sizeof(struct small_object));
-
-	struct small_object *obj = (struct small_object *)wrapper.header;
+	struct small_object *obj = (struct small_object *)
+			small_asan_header_from_payload(ptr);
 	small_assert(obj->size == size && "smfree object size check");
 	quota_end_lease(alloc->quota, obj->size);
 	/* Other objects in the list are poisoned. */
@@ -97,5 +91,5 @@ smfree(struct small_alloc *alloc, void *ptr, size_t size)
 	alloc->used -= obj->size;
 	alloc->objcount--;
 
-	small_wrapper_free(&wrapper);
+	small_asan_free(obj);
 }

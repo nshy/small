@@ -46,7 +46,7 @@ extern "C" {
  * interface as regular implementation but allocates every allocation using
  * malloc(). This allows to do usual ASAN checks for memory allocation.
  * See however a bit of limitation for out-of-bound access check in
- * description of struct small_wrapper.
+ * description of small_asan_alloc.
  *
  * Each allocation is aligned on SMALL_ASAN_ALIGNMENT. This allows to do
  * unaligned memory access check with smallest allowed granularity of allocator.
@@ -80,8 +80,6 @@ enum {
 
 /** Extra data associated with each small object allocation. */
 struct small_object {
-	/** Base member required for wrapper. */
-	struct small_header base;
 	/** Link for objects list in allocator. */
 	struct rlist link;
 	/** Size of allocation. */

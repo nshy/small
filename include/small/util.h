@@ -169,36 +169,9 @@ small_lb(size_t size)
 
 #define SMALL_NO_SANITIZE_ADDRESS __attribute__((no_sanitize_address))
 
-/**
- * Small wrapper allows to hold extra information (header) for every user
- * memory allocation. For this purpose we allocate more memory then requested
- * and keep a header and user data in a same chunk of memory. So wrapper memory
- * layout is next:
- *
- *     UUU HHHHHHH AAA PPPPPPPP UUUU
- *
- * Where
- *    P - user payload
- *    H - header
- *    A - memory used for alignment
- *    U - unused memory (because of header and payload alignments)
- *
- * Header has SMALL_HEADER_ALIGNMENT (large alignment to allow any
- * types in header). User payload is aligned to given alignment A.
- * Additionally payload is not aligned on 2 * A. This improves unaligned
- * access check. Header should be inherited from struct small_header.
- *
- * Wrapper is used with ASAN builds. Thus to check buffer underflows/overflows
- * wrapper memory is poisoned except for user payload of course. Note that
- * due to poison alignment restrictions we may not be able to poison
- * part of alignment area before payload. In this case we write magic to
- * the area which cannot be poisoned and check it is not changed when memory
- * is freed.
- */
-
 enum {
-	/* Alignment of header in wrapper. */
-	SMALL_HEADER_ALIGNMENT = sizeof(long long),
+	/* Alignment of header in memory allocated with small_asan_alloc. */
+	SMALL_ASAN_HEADER_ALIGNMENT = sizeof(void *),
 	/*
 	 * ASAN does not allow to precisely poison arbitrary ranges of memory.
 	 * However if range end is 8-aligned or range end is end of memory
@@ -210,184 +183,63 @@ enum {
 /** Random magic to be used for memory that cannot be poisoned. */
 extern uint64_t small_magic;
 
-/** Wrapper header base. Should be used as first member of actual header. */
-struct small_header {
-	/** Distance from header to wrapper begin in bytes. */
-	size_t alloc_offset;
-};
-
 /**
- * Wrapper pointers.
- */
-struct small_wrapper {
-	/* Pointer to the wrapper itself. */
-	char *ptr;
-	/* Pointer to the header inside the wrapper. */
-	struct small_header *header;
-	/* Pointer to the payload inside the wrapper. */
-	char *payload;
-};
-
-/** Calculate wrapper header pointer from wrapper payload pointer. */
-static inline struct small_header *
-small_wrapper_header(char *payload, size_t header_size)
-{
-	return (struct small_header *)
-		small_align_down((uintptr_t)(payload - header_size),
-				 SMALL_HEADER_ALIGNMENT);
-}
-
-/** Calculate wrapper size. Here alignment is desired user payload alignment. */
-static inline size_t
-small_wrapper_size(size_t header_size, size_t payload_size, size_t alignment)
-{
-	/*
-	 * 2 * A - 1 padding is required to align object on A and
-	 * at the same time make sure object is not 2 * A aligned.
-	 */
-	return header_size + 2 * alignment - 1 + payload_size;
-}
-
-/**
- * Calculate user payload pointer given wrapper pointer. Alignment argument
- * is payload alignment.
- */
-static inline char *
-small_wrapper_payload(char *ptr, size_t header_size, size_t payload_size,
-		      size_t alignment)
-{
-	size_t wrapper_size = small_wrapper_size(header_size, payload_size,
-						 alignment);
-	char *payload = ptr + wrapper_size - payload_size;
-	payload = (char *)small_align_down((uintptr_t)payload, alignment);
-	if (((uintptr_t)payload % (2 * alignment)) == 0)
-		payload -= alignment;
-	small_assert(payload >= ptr);
-	return payload;
-}
-
-/**
- * Allocate wrapper memory and initialize wrapper pointers. Alignment
- * argument is payload alignment.
+ * Allocate aligned memory (payload) with extra place for header.
  *
- * Also memory after payload is poisoned.
+ * Header has SMALL_ASAN_HEADER_ALIGNMENT (large enough alignment for use with
+ * existing small allocators). Payload is aligned to `alignment`,
+ * additionally payload is not aligned on 2 * `alignment`. This improves
+ * unaligned access check.
+ *
+ * All allocated memory except for payload is poisoned. Note that due to poison
+ * alignment restrictions we may not be able to poison part of alignment area
+ * before payload. In this case we write magic to the area which cannot be
+ * poisoned and check it is not changed when memory is freed.
+ *
+ * Return pointer to header. small_asan_header_from_payload
  */
-static inline void
-small_wrapper_alloc(struct small_wrapper *wrapper, size_t payload_size,
-		    size_t alignment, size_t header_size)
+void *
+small_asan_alloc(size_t payload_size, size_t alignment, size_t header_size);
+
+/**
+ * Return pointer to payload given pointer to header allocated with
+ * small_asan_alloc.
+ */
+SMALL_NO_SANITIZE_ADDRESS
+static inline void *
+small_asan_payload_from_header(void *header)
 {
-	size_t wrapper_size = small_wrapper_size(header_size, payload_size,
-						 alignment);
-	wrapper->ptr = (char *)small_xmalloc(wrapper_size);
-	wrapper->payload = small_wrapper_payload(wrapper->ptr, header_size,
-						 payload_size, alignment);
-	wrapper->header = small_wrapper_header(wrapper->payload, header_size);
-	small_assert((char *)wrapper->header >= wrapper->ptr);
-	wrapper->header->alloc_offset = (char *)wrapper->header - wrapper->ptr;
-	/*
-	 * This poison is expected to be precise (without alignment issues)
-	 * because we poison to the end of the allocated block.
-	 */
-	char *begin = wrapper->payload + payload_size;
-	char *end = wrapper->ptr + wrapper_size;
-	ASAN_POISON_MEMORY_REGION(begin, end - begin);
+	char *alloc = (char *)header - SMALL_ASAN_HEADER_ALIGNMENT;
+	return (char *)header + *(uint16_t *)alloc;
 }
 
 /**
- * Unpoison wrapper header memory. Unpoison is intended to be used
- * on freeing memory so we don't need to unpoison what we poisoned
- * before entirely. We need to unpoison only header to be able to
- * read header data to do extra actions before freeing memory.
+ * Return pointer to header given pointer to payload (for allocations
+ * done thru small_asan_alloc).
  */
-static inline void
-small_wrapper_unpoison(char *payload, void *header)
+SMALL_NO_SANITIZE_ADDRESS
+static inline void *
+small_asan_header_from_payload(void *payload)
 {
-	/* Check unpoison actually unpoison from the beginning of the header. */
-	static_assert(SMALL_HEADER_ALIGNMENT % SMALL_POISON_ALIGNMENT == 0,
-		      "header should be aligned on ASAN alignment");
-	/* Unpoison both header and magic area if the latter exists. */
-	ASAN_UNPOISON_MEMORY_REGION(header, payload - (char *)header);
+	uint16_t offset;
+	char *magic_begin = (char *)
+		small_align_down((uintptr_t)payload, SMALL_POISON_ALIGNMENT);
+	memcpy(&offset, (char *)magic_begin - sizeof(offset), sizeof(offset));
+	return (char *)payload - offset;
+}
+
+/** Free memory allocated with small_asan_alloc. Takes pointer to header. */
+static inline void
+small_asan_free(void *header)
+{
+	char *alloc = (char *)header - SMALL_ASAN_HEADER_ALIGNMENT;
+	char *payload = (char *)small_asan_payload_from_header(header);
 	char *magic_begin = (char *)small_align_down((uintptr_t)payload,
 						     SMALL_POISON_ALIGNMENT);
 	small_assert(memcmp(magic_begin, &small_magic,
-		     payload - magic_begin) == 0 && "wrapper magic check");
-}
-
-/**
- * Free wrapper memory.
- */
-static inline void
-small_wrapper_free(struct small_wrapper *wrapper)
-{
-	/* Call unpoison to check that magic is not changed. */
-	small_wrapper_unpoison(wrapper->payload, wrapper->header);
-	free(wrapper->ptr);
-}
-
-/**
- * Initialize wrapper pointers given header pointer. Alignment argument
- * is payload alignment.
- *
- * Use SMALL_NO_SANITIZE_ADDRESS to access poisoned metadata.
- */
-SMALL_NO_SANITIZE_ADDRESS
-static inline void
-small_wrapper_from_header(struct small_wrapper *wrapper, void *header,
-			  size_t payload_size, size_t alignment,
-			  size_t header_size)
-{
-	wrapper->header = (struct small_header *)header;
-	wrapper->ptr = (char *)header - wrapper->header->alloc_offset;
-	wrapper->payload =
-		small_wrapper_payload(wrapper->ptr, header_size, payload_size,
-				      alignment);
-}
-
-/**
- * Initialize wrapper pointers given payload pointer. Alignment argument
- * is payload alignment. Additionally header is unpoisoned.
- *
- * Intended usage on freeing memory is:
- *    small_wrapper_from_payload(&wrapper, payload, ..);
- *    Do some actions accessing wrapper.header.
- *    small_wrapper_free(&wrapper);
- *
- * Use SMALL_NO_SANITIZE_ADDRESS to access poisoned metadata.
- */
-SMALL_NO_SANITIZE_ADDRESS
-static inline void
-small_wrapper_from_payload(struct small_wrapper *wrapper, void *payload,
-			   size_t header_size)
-{
-	wrapper->payload = (char *)payload;
-	wrapper->header = small_wrapper_header(wrapper->payload, header_size);
-	small_wrapper_unpoison(wrapper->payload, wrapper->header);
-	wrapper->ptr = (char *)wrapper->header - wrapper->header->alloc_offset;
-}
-
-/**
- * Poison memory before the payload. Memory after payload is already poisoned
- * on allocation.
- *
- * Intended usage on allocating memory is:
- *     small_wrapper_alloc(&wrapper, ...);
- *     Do some actions accessing wrapper.header.
- *     small_wrapper_poison(&wrapper);
- *     Return wrapper.payload the user.
- */
-static inline void
-small_wrapper_poison(struct small_wrapper *wrapper)
-{
-	static_assert(sizeof(struct small_header) >= SMALL_POISON_ALIGNMENT,
-		      "magic should not overwrite header");
-	char *magic_begin =
-		(char *)small_align_down((uintptr_t)wrapper->payload,
-					 SMALL_POISON_ALIGNMENT);
-	ASAN_POISON_MEMORY_REGION(wrapper->ptr,
-				  magic_begin - wrapper->ptr);
-	static_assert(sizeof(small_magic) >= SMALL_POISON_ALIGNMENT,
-		      "magic size is not large enough");
-	memcpy(magic_begin, &small_magic, wrapper->payload - magic_begin);
+		     payload - magic_begin) == 0 &&
+		     "small_asan_alloc magic check");
+	free(alloc);
 }
 
 #endif /* ifdef ENABLE_ASAN */

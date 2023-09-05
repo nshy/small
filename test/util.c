@@ -29,6 +29,7 @@ test_asan_poison_precise(const char *buf, int size, int start, int end)
 	}
 }
 
+
 /**
  * Check assumptions about ASAN poison/unpoison alignment. Poison/unpoison
  * is precise if range end is 8-aligned or range end is end of memory allocated
@@ -74,89 +75,64 @@ test_asan_poison_assumptions(void)
 }
 
 static void
-test_wrapper_run(size_t obj_size, size_t alignment, size_t header_size)
+test_asan_alloc_run(size_t payload_size, size_t alignment, size_t header_size)
 {
-	struct small_wrapper w;
-	small_wrapper_alloc(&w, obj_size, alignment, header_size);
-	fail_unless(w.ptr != NULL);
-	fail_unless(w.header != NULL);
-	fail_unless(w.payload != NULL);
-	fail_unless(w.ptr <= (char *)w.header);
-	fail_unless(w.payload - (char *)w.header >= (ptrdiff_t)header_size);
-	fail_unless((uintptr_t)w.payload % alignment == 0);
-	fail_unless((uintptr_t)w.payload % (2 * alignment) != 0);
-	memset((char *)w.header + sizeof(struct small_header), 0,
-	       header_size - sizeof(struct small_header));
-	char *payload_end = w.payload + obj_size;
-	char *wrapper_end =
-		w.ptr + small_wrapper_size(header_size, obj_size, alignment);
-	fail_unless(payload_end <= wrapper_end);
-	for (char *p = payload_end; p < wrapper_end; p++)
-		fail_unless(__asan_address_is_poisoned(p));
-	memset(w.payload, 0, obj_size);
+	/* printf("%zd, %zd, %zd\n", payload_size, alignment, header_size); */
+	char *header = (char *)small_asan_alloc(payload_size, alignment,
+						header_size);
+	fail_unless(header != NULL);
+	char *payload = (char *)small_asan_payload_from_header(header);
+	fail_unless(payload != NULL);
+	memset(payload, 0, payload_size);
+	fail_unless(payload >= header + header_size);
+	fail_unless((uintptr_t)payload % alignment == 0);
+	fail_unless((uintptr_t)payload % (2 * alignment) != 0);
+	fail_unless(small_asan_header_from_payload(payload) == header);
 
-	small_wrapper_poison(&w);
-	char *magic_begin = (char *)small_align_down((uintptr_t)w.payload,
+	char *magic_begin = (char *)small_align_down((uintptr_t)payload,
 						     SMALL_POISON_ALIGNMENT);
-	fail_unless(w.ptr <= magic_begin);
-	for (char *p = w.ptr; p < magic_begin; p++)
+	fail_unless(magic_begin >= header + header_size);
+	fail_unless(__asan_address_is_poisoned(header - 1));
+	fail_unless(__asan_address_is_poisoned(payload + payload_size));
+	/* Check poison up until magic. */
+	for (char *p = header; p < magic_begin; p++)
 		fail_unless(__asan_address_is_poisoned(p));
-
-	struct small_wrapper wh;
-	small_wrapper_from_header(&wh, w.header, obj_size, alignment,
-				  header_size);
-	fail_unless(wh.payload = w.payload);
-	fail_unless(wh.header = w.header);
-	fail_unless(wh.ptr = w.ptr);
-
-	for (char *p = magic_begin; p < w.payload; p++) {
-		char s = *p;
+	small_asan_free(header);
+	/* Check magic works. */
+	size_t magic_size = payload - magic_begin;
+	for (size_t off = 0; off < magic_size; off++) {
+		header = (char *)small_asan_alloc(payload_size, alignment,
+						  header_size);
+		payload = (char *)small_asan_payload_from_header(header);
+		magic_begin = (char *)small_align_down((uintptr_t)payload,
+						       SMALL_POISON_ALIGNMENT);
+		/* printf("%zd\n", off); */
+		char *p = magic_begin + off;
 		fail_unless(*p != 0);
 		*p = '\0';
-		struct small_wrapper wp;
 		small_on_assert_failure = on_assert_failure;
 		assert_msg_buf[0] = '\0';
-		small_wrapper_from_payload(&wp, w.payload, header_size);
+		small_asan_free(header);
 		small_on_assert_failure = NULL;
 		fail_unless(strstr(assert_msg_buf,
-				   "wrapper magic check") != NULL);
-		*p = s;
+				   "small_asan_alloc magic check") != NULL);
 	}
-
-	struct small_wrapper wp;
-	small_wrapper_from_payload(&wp, w.payload, header_size);
-	fail_unless(wp.payload = w.payload);
-	fail_unless(wp.header = w.header);
-	fail_unless(wp.ptr = w.ptr);
-	for (char *p = (char *)w.header; p < magic_begin; p++)
-		fail_if(__asan_address_is_poisoned(p));
-
-	if (magic_begin < w.payload) {
-		*magic_begin = '\0';
-		small_on_assert_failure = on_assert_failure;
-		assert_msg_buf[0] = '\0';
-	}
-	small_wrapper_free(&w);
-	small_on_assert_failure = NULL;
-	if (magic_begin < w.payload)
-		fail_unless(strstr(assert_msg_buf,
-				   "wrapper magic check") != NULL);
 }
 
 static void
-test_wrapper(void)
+test_asan_alloc(void)
 {
 	plan(1);
 	header();
 
-	for (int k = 0; k < 3; k++) {
-		size_t header_size = sizeof(struct small_header) * (k + 1);
+	size_t header_sizes[] = {0, 1, 2, 3, 4, 8, 12, 16};
+	for (int i = 0; i < (int)lengthof(header_sizes); i++) {
 		for (int j = 0; j < 5; j++) {
 			size_t alignment = 1 << j;
 			for (int k = 0; k < 11; k++) {
-				size_t obj_size = alignment * k;
-				test_wrapper_run(obj_size, alignment,
-						 header_size);
+				size_t payload_size = alignment * k;
+				test_asan_alloc_run(payload_size, alignment,
+						    header_sizes[i]);
 			}
 		}
 	}
@@ -203,7 +179,7 @@ main(void)
 
 #ifdef ENABLE_ASAN
 	test_asan_poison_assumptions();
-	test_wrapper();
+	test_asan_alloc();
 #endif
 	test_align_down();
 
